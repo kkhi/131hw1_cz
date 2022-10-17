@@ -1,0 +1,74 @@
+---
+title: "HW2-Camilla Zhai"
+output: pdf_document
+date: "2022-10-12"
+---
+```{r}
+library(tidyverse)
+library(tidymodels)
+abalone_info <- read_csv(file='/Users/weiqizhai/Desktop/abalone.csv')
+```
+
+Question 1:
+```{r}
+#calculate and add variable age to the dataset
+new_abalone<-abalone_info %>%mutate(age=rings+1.5) %>% select(everything(), age)
+#Creating a histogram of age
+age_hist <- new_abalone %>% ggplot(aes(x=age))+geom_histogram(binwidth = 1)
+age_hist
+```
+From the histogram above, age is basically normally distributed with a slight right skew.
+The majority of abalone are between the ages of 8 and 13 years.
+
+Question 2:
+```{r}
+#data splitting
+set.seed(1018)
+abalone_split<- initial_split(new_abalone, prop=0.80,strata=age)
+A_train <- training(abalone_split)
+A_test <- testing(abalone_split)
+```
+
+Question 3:
+```{r}
+A_recipe <- recipe(age~type+longest_shell+diameter+height+whole_weight+shucked_weight
++viscera_weight+shell_weight,data=A_train) %>% step_dummy(all_nominal_predictors()) 
+
+A_recipe %>% step_interact(~type:shucked_weight+longest_shell:diameter+shucked_weight:shell_weight) %>% step_normalize(all_numeric_predictors())
+```
+Because our goal is to see if abalone age can be accurately predicted using information other than rings. As a result, we should not use rings as a predictor variable; instead, we should build a model using other variables from the dataset to determine their relationship with the response variable (age); using rings as a predictor variable fails our goal.
+
+Question 4:
+```{r}
+m1 <- linear_reg() %>% set_engine("lm") #specify "lm" model engine
+```
+
+Question 5:
+```{r}
+wflow1 <- workflow() %>% add_recipe(A_recipe) %>% add_model(m1) # setting up a workflow
+fitted_m <- fit(wflow1, A_train) #fit the linear model to the training set
+```
+
+Question 6:
+```{r}
+test_case <- tibble(type='F',longest_shell=0.50, diameter=0.1,height=0.3,
+                    whole_weight=4, shucked_weight=1,viscera_weight=2,shell_weight=1)
+predict(fitted_m, test_case)
+```
+
+Question 7:
+```{r}
+abalone_metrics <- metric_set(rsq,rmse,mae)
+abalone_train  <- predict(fitted_m,new_data=A_train %>% select(-age)) 
+abalone_train <- bind_cols(abalone_train, A_train %>% select(age))
+abalone_metrics(abalone_train, truth=age, estimate=.pred)
+```
+The R squared value is 0.5327499, which is low. It reveals that about 53% of the variability
+observed in the target variable (age) is explained by the regression model
+
+
+
+
+
+
+
