@@ -1,0 +1,150 @@
+---
+title: "HW5-Camilla Zhai"
+output: html_document
+date: "2022-11-16"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,warning = FALSE)
+```
+
+```{r}
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(klaR)
+library(corrr)
+library(corrplot)
+library(discrim)
+library(poissonreg)
+tidymodels_prefer()
+#install.packages("janitor") #installing the janitor package
+library(janitor) #loading the janitor package
+pokemon <- read_csv(file='/Users/weiqizhai/Desktop/Pokemon.csv')
+```
+
+Q1:
+```{r}
+pokemon <- clean_names(pokemon)
+pokemon
+```
+
+clean_names() function converts all the variable names to lower cases and puts underscores between the gaps, in which it makes all the variable names in the pokemon dataset consistent. This function is useful because it removes all punctuation marks from variable names that are not allowed/supported in R syntax (blank space,period...etc). Simultaneously, the function replaces unsupported punctuation marks with R-supported syntax, such as underscores. Furthermore, the clean_names() function converts all letters in variable names to lower case. All of these actions are designed to eliminate troublesome errors and make data analysis much easier in the future.
+
+Q2:
+```{r}
+pokemon %>% 
+  ggplot(aes(fct_infreq(type_1)))+
+  geom_bar(fill="darkred")+
+  geom_text(aes(label=..count..), stat="count", vjust=-0.2)
+```
+
+From the bar chart above, we can see that there are 18 classes. Among 18 pokemon types, "Flying" type has very few pokemon.
+
+```{r}
+pokemon1<-pokemon %>% filter(pokemon$type_1==c("Bug","Fire","Grass","Normal","Water","Psychic"))
+pokemon1$type_1 <- factor(pokemon1$type_1)
+pokemon1$legendary <- factor(pokemon1$legendary)
+```
+
+Q3:
+```{r}
+set.seed(2022)
+pokemon_split<- initial_split(pokemon1, prop=0.7,strata=type_1)
+pokemon_split
+
+train_set <- training(pokemon_split)
+test_set <- testing(pokemon_split)
+dim(train_set)  # verify that the training and testing data sets have the desired number of observations
+dim(test_set)
+```
+
+```{r}
+pm_fold <- vfold_cv(train_set, v = 5, strata=type_1)
+pm_fold
+```
+Stratifying the folds keeps the same class ratio throughout all five folds as it did in the initial dataset, which helps to capture essential population traits in the sample and allows for more accurate future prediction.
+
+
+Q4:
+```{r}
+pokemon_recipe <- recipe(type_1 ~ legendary+generation+sp_atk+attack+speed+
+                           defense+hp+sp_def, train_set)%>%
+  step_dummy(legendary,generation)%>%
+  step_normalize(all_predictors())
+```
+
+Q5:
+```{r}
+reg_spec <- 
+  multinom_reg(penalty = tune(), mixture = tune()) %>% 
+  set_mode("classification") %>% 
+  set_engine("glmnet")
+reg_wf <- workflow() %>% add_recipe(pokemon_recipe) %>%
+  add_model(reg_spec)
+
+A_grid <- grid_regular(penalty(range = c(-5, 5)), mixture(range = c(0, 1)),levels = 10)
+A_grid
+```
+When fitting these models to the folded data, 50 models will need to be fitted
+
+
+
+Q6:
+```{r}
+tune_res <- tune_grid(
+  reg_wf,
+  resamples = pm_fold,
+  grid = A_grid
+)
+```
+```{r}
+autoplot(tune_res)
+```
+If we ignore the proportion of lasso penalty, we can see that the roc auc and accuracy increase as the value of lamda increases; after a certain value of lamda, the roc auc and accuracy begin to decrease and continue to decrease as the value of lamda increases. When we consider the lasso penalty proportion, we can see from the plot that smaller values of penalty and mixture produce better roc auc and accuracy.
+
+Q7:
+```{r}
+best_penalty <- select_best(tune_res, metric = "roc_auc")
+best_penalty
+```
+```{r}
+final1 <- finalize_workflow(reg_wf, best_penalty)
+final_fit <- fit(final1, data = train_set)# fitting the model to the training set
+test1<- augment(final_fit, new_data = test_set)
+acc<- test1%>%accuracy(truth = type_1, estimate =.pred_class)
+acc
+
+```
+The accuracy of this model on the testing set is very low (≈0.2). So its performance on the testing set is bad.
+
+
+Q8:
+```{r}
+test1%>%roc_auc(type_1,.pred_Bug:.pred_Water)
+```
+The overall ROC AUC on the testing set is approximately 0.45.
+```{r}
+test1 %>% roc_curve(type_1,.pred_Bug:.pred_Water) %>% autoplot()
+```
+
+```{r}
+test1 %>% conf_mat(truth = type_1, .pred_class) %>% autoplot(type="heatmap")
+```
+  
+  The overall ROC AUC on the testing set is about 0.45, which is quite low; this indicates that our model performed poorly on the testing set. In addition, the roc curve reveals that our model has no capacity for class separation. The AUC for four Pokemon types (bug, fire, grass, and water) is generally less than 0.5, but only two Pokemon types (normal and psychic) have an AUC more than 0.5. From the confusion matrix's heat map, we can also tell that the model performs best when predicting the type of normal, performs worst when predicting the type of water, and the majority of the model's predictions are "normal," indicating that this model lacks predictive ability.
+This could be due to underfitting.
+
+
+
+
+
+
+
+
+
+
