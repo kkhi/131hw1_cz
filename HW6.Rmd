@@ -1,0 +1,218 @@
+---
+title: "HW6"
+output: 
+  html_document: default
+date: "2022-11-28"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE,warning = FALSE)
+```
+
+```{r}
+library(tidymodels)
+library(ISLR)
+library(ISLR2)
+library(tidyverse)
+library(dplyr)
+library(ggplot2)
+library(glmnet)
+library(klaR)
+library(corrr)
+library(corrplot)
+library(discrim)
+library(poissonreg)
+library(rpart.plot)
+library(vip)
+library(randomForest)
+library(ranger)
+library(janitor) #loading the janitor package
+library(xgboost)
+library(data.table)
+tidymodels_prefer()
+pokemon <- read_csv(file='/Users/weiqizhai/Desktop/Pokemon.csv')
+```
+
+Q1:
+```{r}
+pokemon <- clean_names(pokemon)
+pokemon1<-pokemon %>% filter(pokemon$type_1==c("Bug","Fire","Grass","Normal","Water","Psychic"))
+pokemon1$type_1 <- factor(pokemon1$type_1)
+pokemon1$legendary <- factor(pokemon1$legendary)
+
+set.seed(2022)
+pokemon_split<- initial_split(pokemon1, prop=0.7,strata=type_1)
+train_set <- training(pokemon_split)
+test_set <- testing(pokemon_split)
+
+pm_fold <- vfold_cv(train_set, v = 5, strata=type_1)
+
+pokemon_recipe <- recipe(type_1 ~ legendary+generation+sp_atk+attack+speed+
+                           defense+hp+sp_def, train_set)%>%
+  step_dummy(legendary,generation)%>%
+  step_normalize(all_predictors())
+```
+
+Q2:
+```{r}
+train_set %>% select(is.numeric,-generation,-number) %>%
+  cor() %>%
+  corrplot()
+```
+  
+The correlation matrix contains only numeric variables (variables of other types have been excluded from the plot), and "number" has also been excluded from the plot.
+From the plot, all variables are positively correlated with one another, with the exception of speed and hp(horsepower), which are negatively correlated.
+
+Q3:
+```{r}
+tree_spec <- decision_tree() %>% set_engine('rpart')
+pm_tree_spec <- tree_spec %>% set_mode("classification")
+pm_tree_fit <- pm_tree_spec %>% fit(type_1~legendary+generation+sp_atk+attack+speed+
+                           defense+hp+sp_def, data=train_set)
+
+pm_wf <- workflow() %>% add_model(pm_tree_spec%>% set_args(cost_complexity = tune())) %>% 
+  add_formula(type_1 ~ legendary +generation + sp_atk +attack +speed + defense +hp + sp_def)
+pm_grid <- grid_regular(cost_complexity(range = c(-3, -1)), levels = 10)
+pm_tune_res <- tune_grid(
+  pm_wf, 
+  resamples = pm_fold, 
+  grid = pm_grid, 
+  metrics = metric_set(roc_auc)
+)
+autoplot(pm_tune_res)
+```
+  
+I've observed that roc_auc remains constant until the complexity penalty reaches a certain value; after this value, roc_auc begins to decrease and continues to decrease for the remainder of the complexity penalty value.
+Hence we can conclude that a single decision tree perform better with a smaller complexity penalty.
+
+
+Q4:
+```{r}
+best_complexity<-select_best(pm_tune_res)
+collect_metrics(pm_tune_res)
+```
+  
+The roc_auc of  the best-performing pruned decision tree on the folds is 0.65
+
+
+Q5:
+```{r}
+pm_tree_final <- finalize_workflow(pm_wf, best_complexity)
+pm_tree_final_fit <- fit(pm_tree_final, data = train_set)
+pm_tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+```{r}
+rf_spec <- rand_forest(mtry = tune(),trees=tune(), min_n=tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+rf_wf <- workflow() %>% add_model(rf_spec) %>% 
+  add_recipe(pokemon_recipe)
+rf_grid <- grid_regular(mtry(range = c(1, 8)),
+                             min_n(range=c(2,8)),
+                                   trees(range=c(8,450)), levels = 8)
+```
+mtry, which represents the number of predictors at each split, should not exceed the total number of predictors. mtry is a restriction that forces each split to consider only a subset of the predictors (de-correlating the trees), thereby preventing every tree from splitting on the same predictor, thereby reducing the variance and the overall test error. When m is less than one, each tree has no predictor variable to split on at the initial split, which is invalid. In this case, t he number of predictor variables is eight, so the maximum value of m should not exceed eight.
+mtry=8 represents a bagged model.
+
+
+Q6:
+```{r}
+rf_tune_res <- tune_grid(
+  rf_wf, 
+  resamples = pm_fold, 
+  grid = rf_grid, 
+  metrics = metric_set(roc_auc)
+)
+autoplot(rf_tune_res)
+```
+  
+When mtry=4, trees=8, min_n=7, it yields the best performance.
+
+Q7:
+```{r}
+best_hp<-select_best(rf_tune_res)
+collect_metrics(rf_tune_res)
+```
+  
+The roc_auc of the best-performing random forest model on the folds is 0.73
+
+
+Q8:
+```{r}
+rf_tree_final <- finalize_workflow(rf_wf, best_hp)
+rf_tree_final_fit <- fit(rf_tree_final, data = train_set)
+vip(extract_fit_engine(rf_tree_final_fit))
+```
+  
+sp_atk is most useful; legendary_TRUE and generation are least useful.
+These results are what I expected.
+
+
+Q9:
+```{r}
+bt_spec <- boost_tree(trees = tune()) %>%
+  set_engine("xgboost") %>%
+  set_mode("classification")
+bt_grid <- grid_regular(trees(range=c(10,2000)), levels = 10)
+bt_wf <- workflow() %>% add_model(bt_spec) %>% 
+  add_recipe(pokemon_recipe)
+bt_tune_res <- tune_grid(
+  bt_wf, 
+  resamples = pm_fold, 
+  grid = bt_grid, 
+  metrics = metric_set(roc_auc)
+)
+autoplot(bt_tune_res)
+```
+  
+From the plot, roc_auc increases as the number of trees increases.
+
+```{r}
+best_tree<-select_best(bt_tune_res)
+best_tree
+collect_metrics(bt_tune_res)
+```
+  
+The roc_auc of my best-performing boosted tree model on the folds is 0.649.
+
+
+Q10:
+```{r}
+df <- data.frame(model=c('pruned tree','random forest','boosted tree'),roc_auc=c(0.65,0.73,0.649))
+auc_value<-setDT(df)
+auc_value
+```
+random forest performed best on the folds.
+```{r}
+rf_tree_final <- finalize_workflow(rf_wf, best_hp)
+rf_tree_final_fit <- fit(rf_tree_final, data = train_set)
+test_fit_final <- augment(rf_tree_final_fit, new_data=test_set)
+test_fit_final %>% roc_auc(type_1,.pred_Bug:.pred_Water)
+```
+
+```{r}
+test_fit_final%>% roc_curve(type_1,.pred_Bug:.pred_Water) %>%autoplot() #ROC curves
+```
+
+```{r}
+test_fit_final %>% conf_mat(truth = type_1, estimate=.pred_class) %>% autoplot(type="heatmap")
+```
+  
+My model is best at predicting fire, worst at predicting water.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
